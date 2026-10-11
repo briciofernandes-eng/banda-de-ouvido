@@ -58,7 +58,7 @@ function yin(buf, sr, gate) {
 class Tracker {
   constructor() { this.reset(); }
   reset() {
-    this.hist = new Float64Array(12); this.fast = new Float64Array(12);
+    this.hist = new Float64Array(12); this.fast = new Float64Array(12); this.fast2 = new Float64Array(12);
     this.sS = 0; this.sC = 0; this.prev = null; this.silence = 0;
     this.noteDur = 0; this.notePc = -1; this.lastNotePc = -1; this.endDone = true;
     this.voiced = 0; this.key = -1; this.cand = -1; this.candT = 0; this.fresh = 0;
@@ -66,8 +66,8 @@ class Tracker {
   }
   get offset() { return Math.atan2(this.sS, this.sC) / (2 * Math.PI); } /* em semitons, -0.5..0.5 */
   push(midi, clarity, dt) {
-    const kH = Math.pow(0.5, dt / 14), kF = Math.pow(0.5, dt / 1.3), kT = Math.pow(0.5, dt / 40);
-    for (let i = 0; i < 12; i++) { this.hist[i] *= kH; this.fast[i] *= kF; }
+    const kH = Math.pow(0.5, dt / 14), kF = Math.pow(0.5, dt / 1.3), kF2 = Math.pow(0.5, dt / 0.7), kT = Math.pow(0.5, dt / 40);
+    for (let i = 0; i < 12; i++) { this.hist[i] *= kH; this.fast[i] *= kF; this.fast2[i] *= kF2; }
     this.sS *= kT; this.sC *= kT;
     if (midi == null) {
       this.silence += dt; this.prev = null; this.noteDur = 0; this.notePc = -1;
@@ -84,7 +84,7 @@ class Tracker {
     const w = dt * clarity * clarity;
     if (stable) { this.sS += w * Math.sin(2 * Math.PI * midi); this.sC += w * Math.cos(2 * Math.PI * midi); }
     const pc = mod(Math.round(midi - this.offset), 12), wh = stable ? w : w * 0.25;
-    this.hist[pc] += wh; this.fast[pc] += wh;
+    this.hist[pc] += wh; this.fast[pc] += wh; this.fast2[pc] += wh;
     if (pc === this.notePc) this.noteDur += dt; else { this.notePc = pc; this.noteDur = dt; }
     if (this.noteDur > 0.15) { this.lastNotePc = pc; this.endDone = false; }
     this.voiced += dt;

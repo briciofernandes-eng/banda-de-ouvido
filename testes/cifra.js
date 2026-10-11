@@ -86,6 +86,53 @@ function parseChart(text) {
     let best = 0, br = -2; for (let k = 0; k < 24; k++) { const r = pearson(prof, KEY_PROFILES[k]); if (r > br) { br = r; best = k; } }
     tonic = best % 12; minor = best >= 12;
   }
-  return { seq, sections, tonic, minor, declared: !!tom };
+  let loopStart = 0, idx = 0;
+  for (const sc of sections) { let first = -1, cnt = 0; for (const r of sc.rows) for (const it of r.items) { if (first < 0) first = it; cnt++; } sc.start = first; if (cnt >= 3 && first >= 0) loopStart = first; }
+  return { seq, sections, tonic, minor, declared: !!tom, loopStart };
+}
+
+/* Seguidor: decide, a cada tempo, em que acorde da cifra o cantor está.
+   f = notas cantadas na última fração de segundo; f2 = janela maior (recuperar o lugar). */
+function fitOf(f, c) {
+  let t = 0; for (let i = 0; i < 12; i++) t += f[i];
+  if (t < 1e-6) return 0;
+  return (f[c.root] + 0.8 * f[c.third] + 0.7 * f[c.fifth]) / t;
+}
+function followStep(S, seq, shift, f, f2, silence) {
+  const n = seq.length; let total = 0; for (let i = 0; i < 12; i++) total += f[i];
+  if (silence > 1.5 || total < 0.2) return S.pos; /* cantor parou: a banda espera */
+  const ob = p => chordObj(seq[p], shift, false);
+  const fc = fitOf(f, ob(S.pos));
+  const nx = S.pos + 1 < n ? fitOf(f, ob(S.pos + 1)) : -1;
+  const nx2 = S.pos + 2 < n ? fitOf(f, ob(S.pos + 2)) : -1;
+  S.poor = fc < 0.45 ? S.poor + 1 : 0;
+  let np = S.pos;
+  if (S.beats >= 3) {
+    if (nx2 > Math.max(fc, nx) * 1.6 && nx2 > 0.6) np = S.pos + 2;
+    else if (nx >= 0 && nx > fc * 1.1 && nx > 0.45) np = S.pos + 1;
+    else if (S.beats >= 16 && nx >= 0) np = S.pos + 1;
+    else if (S.beats >= 8 && nx >= 0 && nx >= fc * 0.8) np = S.pos + 1;
+  }
+  if (np === S.pos && S.poor >= 8) { /* perdeu o lugar: procura na cifra toda */
+    let best = S.pos, bf = fitOf(f2, ob(S.pos));
+    for (let p = 0; p < n; p++) { const v = fitOf(f2, ob(p)); if (v > bf + 0.35) { bf = v; best = p; } }
+    np = best;
+  }
+  if (np !== S.pos) { S.pos = np; S.beats = 0; S.poor = 0; }
+  return S.pos;
+}
+
+/* Transposição pela cifra: compara as notas cantadas com as notas dos acordes da cifra, em cada um dos 12 deslocamentos */
+function chartProfile(seq) {
+  const P = new Array(12).fill(0);
+  for (const c of seq) { P[c.root] += 1; P[c.third] += 0.8; P[c.fifth] += 0.7; if (c.seventh != null) P[c.seventh] += 0.2; }
+  return P;
+}
+function estimateShift(hist, P) {
+  const r = [], rot = new Array(12);
+  for (let s = 0; s < 12; s++) { for (let pc = 0; pc < 12; pc++) rot[pc] = P[mod(pc - s, 12)]; r.push(pearson(hist, rot)); }
+  let best = 0; for (let s = 1; s < 12; s++) if (r[s] > r[best]) best = s;
+  let second = -2; for (let s = 0; s < 12; s++) if (s !== best && r[s] > second) second = r[s];
+  return { best, r, margin: r[best] - second };
 }
 //</CIFRA>
