@@ -1,20 +1,20 @@
 //<CIFRA>
 /* ============ CIFRA (analisador, sem DOM) ============ */
-const CHORD_RE = /^([A-G])([#b]?)((?:maj|min|dim|aug|sus|add|m|M|º|°|ø|Δ|\+|-|\d+|#|b|\(|\)|,|\/(?=\d))*)(?:\/([A-G])([#b]?))?$/;
+const CHORD_RE = /^([A-G])([#b]?)((?:maj|Maj|MAJ|min|Min|MIN|dim|Dim|DIM|aug|Aug|AUG|sus|Sus|SUS|add|Add|ADD|m|M|º|°|ø|Δ|\+|-|\d+|#|b|\(|\)|,|\/(?=\d))*)(?:\/([A-G])([#b]?))?$/;
 const LETTER_PC = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
 const pcOf = (l, a) => mod(LETTER_PC[l] + (a === '#' ? 1 : a === 'b' ? -1 : 0), 12);
 function parseChord(tok) {
   const m = CHORD_RE.exec(tok); if (!m) return null;
-  const q = m[3] || '', root = pcOf(m[1], m[2]), bass = m[4] ? pcOf(m[4], m[5]) : null;
+  const q = (m[3] || '').replace(/^(Maj|MAJ)/,'maj'), root = pcOf(m[1], m[2]), bass = m[4] ? pcOf(m[4], m[5]) : null;
   const half = /ø/.test(q) || /m7\(?b5/.test(q);
-  const dim = /dim|º|°/.test(q) || half;
-  const minor = /^(m(?!aj)|min|-)/.test(q) || dim;
-  const aug = /aug|\+/.test(q);
-  const sus2 = /sus2/.test(q), sus4 = (/sus(?!2)/.test(q) || /^4/.test(q)) && !sus2;
+  const dim = /dim|Dim|DIM|º|°/.test(q) || half;
+  const minor = /^(m(?!aj)|min|Min|MIN|-)/.test(q) || dim;
+  const aug = /aug|Aug|AUG|\+/.test(q);
+  const sus2 = /sus2/i.test(q), sus4 = (/sus(?!2)/i.test(q) || /^4/.test(q)) && !sus2;
   const third = minor ? 3 : sus2 ? 2 : sus4 ? 5 : 4;
   const fifth = dim || /b5|5-/.test(q) ? 6 : aug || /#5|5\+/.test(q) ? 8 : 7;
   let seventh = null;
-  if (/maj7|M7|7M|Δ|maj9|M9/.test(q)) seventh = 11;
+  if (/maj7|Maj7|M7|7M|Δ|maj9|M9/.test(q)) seventh = 11;
   else if (/°7|dim7/.test(q)) seventh = 9;
   else if (/(7|11|13)/.test(q)) seventh = 10;
   else if (/9/.test(q) && !/add9/.test(q)) seventh = 10;
@@ -46,14 +46,15 @@ function chordLine(line) {
 }
 const HEADER_RE = /^(intro|estrofe|refr[aã]o|ponte|solo|final|pr[eé][- ]?refr[aã]o|primeira parte|segunda parte|terceira parte|parte\s*\d*|verso|coro|interl[uú]dio|instrumental)\b[^\n]{0,30}$/i;
 function parseChart(text) {
-  const lines = String(text).replace(/\r/g, '').split('\n'), seq = [], sections = [];
-  let sec = null, tom = null;
+  const lines = String(text).replace(/\r/g, '').replace(/♭/g, 'b').replace(/♯/g, '#').replace(/[\u00a0\u2007\u202f]/g, ' ').split('\n'), seq = [], sections = [];
+  let sec = null, tom = null; const unknown = new Set(); let chordRows = 0;
   const newSec = name => { sec = { name, rows: [] }; sections.push(sec); };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim(); if (!line) continue;
     let m;
     if ((m = /^tom\s*:\s*([A-Ga-g])([#b]?)\s*(m(?!aj)|min)?/i.exec(line))) { tom = { pc: pcOf(m[1].toUpperCase(), m[2]), minor: !!m[3] }; continue; }
-    if (/^capotraste/i.test(line)) continue;
+    if (/^(capotraste|afina[cç][aã]o|tuning|capo)\b/i.test(line)) continue;
+    if (/^[eEBGDAa]\|[-\dxhpbrs\/\\~()|\s.<>^*]*$/.test(line) || /^[-|\d\s]{12,}$/.test(line)) continue; /* linhas de tablatura */
     let label = null, ch = null;
     if ((m = /^\[([^\]]+)\]\s*(.*)$/.exec(line))) {
       const rest = m[2].trim();
@@ -65,14 +66,25 @@ function parseChart(text) {
       const lm = /^([A-Za-zÀ-ú0-9ºª ]{2,24}):\s*(.+)$/.exec(line);
       if (lm) { const c2 = chordLine(lm[2]); if (c2) { label = lm[1].trim(); ch = c2; } }
     }
+    if (!ch && /\[[A-G][^\]\s]*\]/.test(line)) { /* cifra entre colchetes na letra: [Am]texto [G]texto */
+      const found = [...line.matchAll(/\[([^\]\s]+)\]/g)].map(x => x[1]).filter(t => parseChord(t));
+      if (found.length) {
+        if (!sec) newSec('');
+        const row = { items: [], lyric: line.replace(/\[([^\]\s]+)\]/g, (m0, t) => parseChord(t) ? '' : m0).replace(/\s+/g, ' ').trim() };
+        for (const tok of found) { seq.push(parseChord(tok)); row.items.push(seq.length - 1); }
+        chordRows++; sec.rows.push(row); continue;
+      }
+    }
     if (ch) {
       if (label) newSec(label); else if (!sec) newSec('');
       const row = { items: [], lyric: '' };
       for (const tok of ch) { seq.push(parseChord(tok)); row.items.push(seq.length - 1); }
       const nx = (lines[i + 1] || '').trim();
-      if (nx && !chordLine(nx) && !/^\[/.test(nx) && !HEADER_RE.test(nx) && !/^tom\s*:/i.test(nx) && !/^capotraste/i.test(nx)) { row.lyric = nx; i++; }
-      sec.rows.push(row); continue;
+      if (nx && !chordLine(nx) && !/^\[/.test(nx) && !HEADER_RE.test(nx) && !/^tom\s*:/i.test(nx) && !/^(capotraste|afina[cç][aã]o|tuning)/i.test(nx) && !/^[eEBGDAa]\|/.test(nx)) { row.lyric = nx; i++; }
+      chordRows++; sec.rows.push(row); continue;
     }
+    { const tk = line.split(/\s+/), clean = t => t.replace(/^[(\[|]+|[\])|]+$/g, ''), ok = tk.filter(t => parseChord(clean(t)));
+      if (ok.length >= 2) for (const t of tk) { const u = clean(t); if (u && !parseChord(u) && /^[A-G]/.test(u) && u.length <= 10 && !/[a-zà-ú]{4,}/.test(u) && !FILL.test(u)) unknown.add(u); } }
     if (HEADER_RE.test(line)) { newSec(line.replace(/[:\s]+$/, '')); continue; }
     if (!sec) newSec('');
     sec.rows.push({ items: [], lyric: line });
@@ -86,9 +98,15 @@ function parseChart(text) {
     let best = 0, br = -2; for (let k = 0; k < 24; k++) { const r = pearson(prof, KEY_PROFILES[k]); if (r > br) { br = r; best = k; } }
     tonic = best % 12; minor = best >= 12;
   }
-  let loopStart = 0, idx = 0;
-  for (const sc of sections) { let first = -1, cnt = 0; for (const r of sc.rows) for (const it of r.items) { if (first < 0) first = it; cnt++; } sc.start = first; if (cnt >= 3 && first >= 0) loopStart = first; }
-  return { seq, sections, tonic, minor, declared: !!tom, loopStart };
+  let loopStart = 0, firstVerse = -1, chorus = -1;
+  for (const sc of sections) {
+    let first = -1, cnt = 0; for (const r of sc.rows) for (const it of r.items) { if (first < 0) first = it; cnt++; }
+    sc.start = first; if (first < 0 || cnt < 2) continue;
+    if (/refr[aã]o|coro|chorus/i.test(sc.name)) chorus = first;
+    else if (firstVerse < 0 && !/intro|solo|interl|instrumental|final|ponte|tab/i.test(sc.name)) firstVerse = first;
+  }
+  loopStart = chorus >= 0 ? chorus : firstVerse >= 0 ? firstVerse : 0;
+  return { seq, sections, tonic, minor, declared: !!tom, loopStart, chordRows, unknown: [...unknown].slice(0, 6) };
 }
 
 /* Seguidor: decide, a cada tempo, em que acorde da cifra o cantor está.
@@ -110,8 +128,7 @@ function followStep(S, seq, shift, f, f2, silence) {
   if (S.beats >= 3) {
     if (nx2 > Math.max(fc, nx) * 1.6 && nx2 > 0.6) np = S.pos + 2;
     else if (nx >= 0 && nx > fc * 1.1 && nx > 0.45) np = S.pos + 1;
-    else if (S.beats >= 16 && nx >= 0) np = S.pos + 1;
-    else if (S.beats >= 8 && nx >= 0 && nx >= fc * 0.8) np = S.pos + 1;
+    else if (S.beats >= 8 && nx >= 0) np = S.pos + 1; /* no máximo 2 compassos parado: se o microfone captar a própria banda, a cifra continua andando */
   }
   if (np === S.pos && S.poor >= 8) { /* perdeu o lugar: procura na cifra toda */
     let best = S.pos, bf = fitOf(f2, ob(S.pos));
