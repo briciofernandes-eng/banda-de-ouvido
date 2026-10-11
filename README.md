@@ -32,7 +32,7 @@ O app **não traz catálogo** de músicas, cifras nem letras. As cifras que voc�
 
 - Com poucas notas diferentes o tom é ambíguo (por exemplo, só Dó, Mi e Sol cabem em vários tons).
 - Ainda não segue o andamento do cantor: usa o BPM do estilo.
-- Sem cancelamento do eco da banda no microfone: use fones.
+- Sem cancelamento do eco da banda no microfone. Sem fones, o app escuta você por uns 3 s com a banda em silêncio, trava o tom e segue os acordes por tempo (modo "sem fones"). Com fones, a banda acompanha o que você canta. Cancelamento de eco de verdade é o próximo passo.
 - O acompanhamento da cifra decide só pelas notas cantadas (não ouve a letra) e pode atrasar cerca de um compasso nas trocas de acorde.
 
 ## Roadmap

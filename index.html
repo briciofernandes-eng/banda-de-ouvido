@@ -177,11 +177,14 @@ button.chord.start{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--a
           <div class="field"><label for="cifraTom">Tom do cantor (nota da tônica)</label><select id="cifraTom"></select></div>
           <div class="field"><label for="cifraBars">Duração do acorde</label><select id="cifraBars"><option value="0" selected>Automática (acompanha o que eu canto)</option><option value="1">1 compasso</option><option value="2">2 compassos</option><option value="4">4 compassos</option></select></div>
         </div>
-        <label class="chk" style="margin-top:12px"><input id="cifraWait" type="checkbox" checked> Esperar eu começar a cantar</label>
+        <label class="chk" style="margin-top:12px"><input id="cifraWait" type="checkbox" checked> Esperar eu cantar umas 4 notas antes da banda entrar</label>
+        <label class="chk" style="margin-top:8px"><input id="cifraSpeaker" type="checkbox" checked> Estou sem fones (a banda sai no alto-falante)</label>
+        <p class="hint" style="margin-top:4px">Sem fones, o microfone capta a banda e o app se confunde. Por isso ele trava o tom depois de ouvir você e segue os acordes por tempo. Com fones, desmarque: a banda passa a acompanhar o que você canta.</p>
         <label class="chk" style="margin-top:8px"><input id="cifraLoop" type="checkbox" checked> Repetir a cifra enquanto eu continuar cantando</label>
         <div class="row" style="margin-top:12px">
           <button id="btnCifraPlay" class="primary" type="button">Tocar cifra</button>
           <button id="btnHold" class="toggle" type="button" aria-pressed="false">Segurar</button>
+          <button id="btnRearm" type="button">Reouvir meu tom</button>
           <button id="btnPrevChord" type="button" aria-label="Acorde anterior">◀</button>
           <button id="btnNextChord" type="button" aria-label="Próximo acorde">▶</button>
         </div>
@@ -955,7 +958,8 @@ function renderResults() {
 /* ============ CIFRA: estado e acompanhamento ============ */
 const cf = { chart: null, state: 'idle', startPos: 0, pos: 0, beats: 0, poor: 0, barsPer: 0, hold: false, pendingJump: null,
   shift: 0, known: false, manual: -1, first: true, wait: true, loop: true, armT: 0,
-  sh: 0, sConf: 0, cand: -1, candT: 0, locked: false, log: [], lastLogPos: -1 };
+  sh: 0, sConf: 0, cand: -1, candT: 0, locked: false, log: [], lastLogPos: -1,
+  speaker: true, initPos: 0, armReady: false, armEst: null };
 let playlist = false, plIdx = 0, chipEls = [], shownShift = null, shownIdx = -1, shownState = '';
 const SAMPLE = `Tom: G
 [Intro] G D Em C
@@ -978,11 +982,11 @@ function cifraBeat(step) {
     curChord = chordObj(seq[cf.pos], cf.shift, cifraFlats());
     if (cf.lastLogPos !== cf.pos) { cf.log.push({ pos: cf.pos, t: performance.now() / 1000 }); cf.lastLogPos = cf.pos; if (cf.log.length > 60) cf.log.shift(); }
   };
-  if (cf.first) { cf.first = false; cf.pos = clamp(cf.startPos, 0, n - 1); cf.beats = 0; cf.poor = 0; setChord(); return; }
+  if (cf.first) { cf.first = false; cf.pos = clamp(cf.initPos, 0, n - 1); cf.beats = 0; cf.poor = 0; setChord(); return; }
   cf.beats++;
   if (cf.pendingJump != null && step === 0) { cf.pos = clamp(cf.pendingJump, 0, n - 1); cf.pendingJump = null; cf.beats = 0; cf.poor = 0; setChord(); return; }
   if (cf.hold) return;
-  const auto = cf.barsPer === 0 && sourceKind !== 'none' && cf.locked, loopStart = cf.chart.loopStart || 0;
+  const auto = !cf.speaker && cf.barsPer === 0 && sourceKind !== 'none' && cf.locked, loopStart = cf.chart.loopStart || 0;
   if (auto) {
     const S = { pos: cf.pos, beats: cf.beats, poor: cf.poor };
     followStep(S, seq, cf.shift, tracker.fast2, tracker.fast, tracker.silence);
@@ -1009,9 +1013,20 @@ function cifraProfile(now) {
   }
   return P;
 }
+function armedEstimate() {
+  const seq = cf.chart.seq; cf.armReady = false;
+  if (tracker.total < 0.4) { cf.known = false; return; }
+  const P4 = chartProfile(seq.slice(cf.startPos, cf.startPos + 4)), Pf = chartProfile(seq);
+  const s4 = P4.reduce((a, b) => a + b, 0) || 1, sf = Pf.reduce((a, b) => a + b, 0) || 1;
+  const e = estimateShift(tracker.hist, P4.map((v, i) => 0.7 * v / s4 + 0.3 * Pf[i] / sf));
+  cf.armEst = e; cf.known = true; cf.sh = e.best; cf.shift = norm12(e.best);
+  cf.armReady = (tracker.voiced >= 2.5 && tracker.distinct >= 3 && e.margin >= 0.06) || tracker.voiced >= 6;
+}
 function computeShift(dt) {
   const ch = cf.chart; if (!ch) return;
   if (cf.manual >= 0) { cf.known = true; cf.shift = norm12(cf.manual - ch.tonic); cf.sConf = 1; cf.locked = true; return; }
+  if (cf.state === 'armed') { armedEstimate(); return; }
+  if (cf.state === 'playing' && cf.speaker) { cf.known = true; cf.shift = norm12(cf.sh); cf.locked = true; return; } /* sem fones: tom travado */
   if (cf.state === 'playing' && cf.log.length) { /* tocando: compara o que você canta com os acordes que já passaram */
     if (tracker.total < 0.4) { cf.known = false; cf.sConf *= 0.98; return; }
     const e = estimateShift(tracker.hist, cifraProfile(performance.now() / 1000));
@@ -1075,9 +1090,9 @@ function updateCifraUI(force) {
     setTxt('cifraInfo', 'Cifra em ' + orig + ' · ' + ch.seq.length + ' acordes lidos.' +
       (ch.unknown.length ? ' Não entendi: ' + ch.unknown.join(', ') + '.' : '') + ' ' + (cf.known ? 'você canta em ' + tgt + ', transposição ' + (cf.shift > 0 ? '+' : '') + cf.shift + ' semitons.' : 'ainda descobrindo o seu tom.'));
   }
-  { const n = ch.seq.length, why = cf.manual >= 0 ? 'tom fixo' : cf.barsPer > 0 || sourceKind === 'none' ? 'por tempo' : cf.locked ? 'seguindo a sua voz' : 'procurando o seu tom, avançando por tempo';
+  { const n = ch.seq.length, why = cf.manual >= 0 ? 'tom fixo' : cf.speaker ? 'tom travado, acordes por tempo' : cf.barsPer > 0 || sourceKind === 'none' ? 'por tempo' : cf.locked ? 'seguindo a sua voz' : 'procurando o seu tom, avançando por tempo';
     setTxt('cifraDbg', cf.state === 'playing' ? 'Acorde ' + (cf.pos + 1) + ' de ' + n + ' · ' + why + (sourceKind !== 'none' && tracker.silence > 1.5 ? ' · esperando você cantar' : '')
-      : cf.state === 'armed' ? 'Esperando você começar a cantar…' : 'Começa no acorde ' + (cf.startPos + 1) + ' de ' + n + '. Toque num acorde para mudar.'); }
+      : cf.state === 'armed' ? (cf.manual >= 0 ? 'Esperando você começar a cantar…' : 'Ouvindo o seu tom… ' + tracker.voiced.toFixed(1).replace('.', ',') + ' s cantados (preciso de uns 3 s e 3 notas diferentes).') : 'Começa no acorde ' + (cf.startPos + 1) + ' de ' + n + '. Toque num acorde para mudar.'); }
   const idx = cf.state === 'playing' ? cf.pos : cf.startPos, key = idx + ':' + cf.state;
   if (shownIdx !== key) {
     shownIdx = key;
@@ -1091,7 +1106,12 @@ function updateCifraButtons() {
 }
 function beginPlaying() {
   cf.state = 'playing'; cf.first = true; cf.beats = 0; cf.poor = 0; cf.pendingJump = null; cf.armT = 0;
-  cf.sConf = 0; cf.known = false; cf.locked = cf.manual >= 0; cf.cand = -1; cf.log = []; cf.lastLogPos = -1;
+  { const n = cf.chart.seq.length, bar = 240 / (+$('bpm').value);
+    cf.initPos = cf.manual < 0 && tracker.voiced > 0.5 ? Math.min(n - 1, cf.startPos + Math.floor(tracker.voiced / bar)) : cf.startPos; }
+  if (cf.manual >= 0) { cf.sConf = 1; cf.known = true; }
+  else if (cf.armEst) { cf.sConf = Math.min(1, 0.6 + cf.armEst.margin * 3); cf.known = true; }
+  else { cf.sConf = 0; cf.known = false; }
+  cf.locked = cf.manual >= 0 || cf.speaker; cf.cand = -1; cf.log = []; cf.lastLogPos = -1;
   stepIdx = 0; nextT = actx.currentTime + 0.12; beatQ = []; updateCifraButtons();
   say(playlist ? 'Pot-pourri em andamento.' : 'Tocando a cifra.');
 }
@@ -1100,7 +1120,7 @@ function startCifra() {
   ensureCtx(); bandActive = true; cf.armT = 0;
   const hasSrc = sourceKind !== 'none';
   if (!hasSrc && cf.manual < 0) { cf.state = 'armed'; say('Ligue o microfone ou a voz de teste. A banda entra quando você começar a cantar. Ou escolha o "Tom do cantor" para tocar sem ouvir.'); }
-  else if (cf.wait && hasSrc) { cf.state = 'armed'; say('Pronto. A banda entra quando você começar a cantar e acompanha as suas notas. Use fones ou deixe o volume da banda baixo, para ela não entrar no microfone.'); }
+  else if (cf.wait && hasSrc) { cf.state = 'armed'; tracker.reset(); cf.armReady = false; cf.armEst = null; say('Pronto. Cante umas 4 notas com a banda em silêncio. Quando o app descobrir o seu tom, a banda entra.'); }
   else beginPlaying();
   updateCifraButtons();
 }
@@ -1174,7 +1194,7 @@ function frame(ts) {
   // cifra
   if (cf.chart) {
     computeShift(dt);
-    if (cf.state === 'armed') { if (midi != null) cf.armT += dt; else cf.armT = 0; if (cf.armT > 0.25 && actx) beginPlaying(); }
+    if (cf.state === 'armed' && actx) { if (midi != null) cf.armT += dt; else cf.armT = 0; if (cf.manual >= 0 ? cf.armT > 0.25 : cf.armReady) beginPlaying(); }
     updateCifraUI(false);
   }
 
@@ -1293,6 +1313,15 @@ $('bpm').dispatchEvent(new Event('input'));
 $('cifraTom').addEventListener('change', e => { cf.manual = +e.target.value; shownShift = null; });
 $('cifraBars').addEventListener('change', e => { cf.barsPer = +e.target.value; });
 $('cifraWait').addEventListener('change', e => { cf.wait = e.target.checked; });
+$('cifraSpeaker').addEventListener('change', e => { cf.speaker = e.target.checked; });
+$('btnRearm').addEventListener('click', () => {
+  if (!cf.chart) return;
+  if (sourceKind === 'none') { say('Ligue o microfone ou a voz de teste primeiro.', true); return; }
+  ensureCtx(); bandActive = true;
+  if (cf.state === 'playing') cf.startPos = cf.pos;
+  cf.state = 'armed'; tracker.reset(); cf.armReady = false; cf.armEst = null; cf.armT = 0; shownIdx = -1; updateCifraButtons();
+  say('Cante umas 4 notas com a banda em silêncio. Ela volta no tom que ouvir, neste mesmo acorde.');
+});
 $('cifraLoop').addEventListener('change', e => { cf.loop = e.target.checked; });
 let parseTimer = null;
 $('cifraText').addEventListener('input', () => { clearTimeout(parseTimer); parseTimer = setTimeout(() => loadChart($('cifraText').value), 350); });
